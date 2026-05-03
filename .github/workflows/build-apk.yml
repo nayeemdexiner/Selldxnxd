@@ -1,4 +1,4 @@
-name: Build Full APK - Fixed Artifact
+name: Build Door Memo APK
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
         with:
           channel: stable
 
-      - name: Create Flutter app
+      - name: Create Flutter project
         run: |
           rm -rf door_memo_app
           flutter create door_memo_app --platforms android --org com.nayeem --project-name door_memo_reminder
@@ -46,8 +46,6 @@ jobs:
             flutter:
               sdk: flutter
             shared_preferences: ^2.3.2
-            flutter_local_notifications: ^17.2.4
-            timezone: ^0.9.4
             intl: ^0.19.0
 
           dev_dependencies:
@@ -59,7 +57,7 @@ jobs:
             uses-material-design: true
           EOF
 
-      - name: Write complete app code
+      - name: Write app code
         working-directory: door_memo_app
         run: |
           cat > lib/main.dart <<'EOF'
@@ -67,186 +65,9 @@ jobs:
           import 'package:flutter/material.dart';
           import 'package:shared_preferences/shared_preferences.dart';
           import 'package:intl/intl.dart';
-          import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-          import 'package:timezone/data/latest_all.dart' as tzdata;
-          import 'package:timezone/timezone.dart' as tz;
 
-          final FlutterLocalNotificationsPlugin notifications = FlutterLocalNotificationsPlugin();
-
-          Future<void> main() async {
-            WidgetsFlutterBinding.ensureInitialized();
-            await setupNotifications();
+          void main() {
             runApp(const DoorMemoApp());
-          }
-
-          Future<void> setupNotifications() async {
-            tzdata.initializeTimeZones();
-            const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-            const settings = InitializationSettings(android: android);
-            await notifications.initialize(settings);
-            final androidPlugin = notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
-            await androidPlugin?.requestNotificationsPermission();
-            await androidPlugin?.requestExactAlarmsPermission();
-          }
-
-          class Memo {
-            String id, memoNo, date, name, address, phone, details, seenDate, seenTime, deliveryDate, deliveryTime, note;
-            int qty;
-            double rate, total, advance, due;
-            bool delivered, paid;
-
-            Memo({
-              required this.id,
-              required this.memoNo,
-              required this.date,
-              required this.name,
-              required this.address,
-              required this.phone,
-              required this.details,
-              required this.qty,
-              required this.rate,
-              required this.total,
-              required this.advance,
-              required this.due,
-              required this.seenDate,
-              required this.seenTime,
-              required this.deliveryDate,
-              required this.deliveryTime,
-              required this.note,
-              required this.delivered,
-              required this.paid,
-            });
-
-            Map<String, dynamic> toJson() => {
-              'id': id,
-              'memoNo': memoNo,
-              'date': date,
-              'name': name,
-              'address': address,
-              'phone': phone,
-              'details': details,
-              'qty': qty,
-              'rate': rate,
-              'total': total,
-              'advance': advance,
-              'due': due,
-              'seenDate': seenDate,
-              'seenTime': seenTime,
-              'deliveryDate': deliveryDate,
-              'deliveryTime': deliveryTime,
-              'note': note,
-              'delivered': delivered,
-              'paid': paid,
-            };
-
-            factory Memo.fromJson(Map<String, dynamic> j) => Memo(
-              id: j['id'] ?? '',
-              memoNo: j['memoNo'] ?? '',
-              date: j['date'] ?? '',
-              name: j['name'] ?? '',
-              address: j['address'] ?? '',
-              phone: j['phone'] ?? '',
-              details: j['details'] ?? '',
-              qty: j['qty'] ?? 1,
-              rate: (j['rate'] ?? 0).toDouble(),
-              total: (j['total'] ?? 0).toDouble(),
-              advance: (j['advance'] ?? 0).toDouble(),
-              due: (j['due'] ?? 0).toDouble(),
-              seenDate: j['seenDate'] ?? '',
-              seenTime: j['seenTime'] ?? '09:00',
-              deliveryDate: j['deliveryDate'] ?? '',
-              deliveryTime: j['deliveryTime'] ?? '09:00',
-              note: j['note'] ?? '',
-              delivered: j['delivered'] ?? false,
-              paid: j['paid'] ?? false,
-            );
-          }
-
-          class Store {
-            static const key = 'memos';
-
-            static Future<List<Memo>> getMemos() async {
-              final sp = await SharedPreferences.getInstance();
-              final raw = sp.getStringList(key) ?? [];
-              final list = raw.map((e) => Memo.fromJson(jsonDecode(e))).toList();
-              list.sort((a, b) => b.date.compareTo(a.date));
-              return list;
-            }
-
-            static Future<void> saveMemo(Memo m) async {
-              final list = await getMemos();
-              final index = list.indexWhere((x) => x.id == m.id);
-              if (index >= 0) {
-                list[index] = m;
-              } else {
-                list.add(m);
-              }
-              final sp = await SharedPreferences.getInstance();
-              await sp.setStringList(key, list.map((e) => jsonEncode(e.toJson())).toList());
-              await Reminder.schedule(m);
-            }
-
-            static Future<void> deleteMemo(Memo m) async {
-              final list = await getMemos();
-              list.removeWhere((x) => x.id == m.id);
-              final sp = await SharedPreferences.getInstance();
-              await sp.setStringList(key, list.map((e) => jsonEncode(e.toJson())).toList());
-              await Reminder.cancel(m.id);
-            }
-          }
-
-          class Reminder {
-            static int nid(String s) => s.codeUnits.fold(0, (p, e) => (p + e) % 2147483647);
-
-            static DateTime? parse(String date, String time) {
-              try {
-                if (date.isEmpty) return null;
-                final d = date.split('-').map(int.parse).toList();
-                final t = time.split(':').map(int.parse).toList();
-                return DateTime(d[0], d[1], d[2], t[0], t[1]);
-              } catch (_) {
-                return null;
-              }
-            }
-
-            static Future<void> cancel(String id) async {
-              await notifications.cancel(nid('${id}_seen'));
-              await notifications.cancel(nid('${id}_delivery'));
-            }
-
-            static Future<void> schedule(Memo m) async {
-              await cancel(m.id);
-              await one(m, true);
-              await one(m, false);
-            }
-
-            static Future<void> one(Memo m, bool seen) async {
-              final dt = parse(seen ? m.seenDate : m.deliveryDate, seen ? m.seenTime : m.deliveryTime);
-              if (dt == null || dt.isBefore(DateTime.now())) return;
-              final title = seen ? 'Seen Reminder - Memo ${m.memoNo}' : 'Delivery Reminder - Memo ${m.memoNo}';
-              final body = '${m.name}\nPhone: ${m.phone}\nDue: ${m.due.toStringAsFixed(0)}\n${m.details}';
-
-              await notifications.zonedSchedule(
-                nid('${m.id}_${seen ? "seen" : "delivery"}'),
-                title,
-                body,
-                tz.TZDateTime.from(dt, tz.local),
-                const NotificationDetails(
-                  android: AndroidNotificationDetails(
-                    'memo_alarm_channel',
-                    'Memo Alarm',
-                    channelDescription: 'Seen date and delivery date alarm',
-                    importance: Importance.max,
-                    priority: Priority.high,
-                    playSound: true,
-                    enableVibration: true,
-                    fullScreenIntent: true,
-                  ),
-                ),
-                androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-                uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
-              );
-            }
           }
 
           class DoorMemoApp extends StatelessWidget {
@@ -261,9 +82,114 @@ jobs:
                   useMaterial3: true,
                   colorSchemeSeed: Colors.indigo,
                   scaffoldBackgroundColor: const Color(0xfff4f6fb),
-                  inputDecorationTheme: const InputDecorationTheme(border: OutlineInputBorder()),
+                  inputDecorationTheme: const InputDecorationTheme(
+                    border: OutlineInputBorder(),
+                  ),
                 ),
                 home: const HomePage(),
+              );
+            }
+          }
+
+          class Memo {
+            String id;
+            String memoNo;
+            String name;
+            String phone;
+            String address;
+            String details;
+            String orderDate;
+            String seenDate;
+            String deliveryDate;
+            double total;
+            double advance;
+            double due;
+            bool delivered;
+            bool paid;
+
+            Memo({
+              required this.id,
+              required this.memoNo,
+              required this.name,
+              required this.phone,
+              required this.address,
+              required this.details,
+              required this.orderDate,
+              required this.seenDate,
+              required this.deliveryDate,
+              required this.total,
+              required this.advance,
+              required this.due,
+              required this.delivered,
+              required this.paid,
+            });
+
+            Map<String, dynamic> toJson() => {
+              'id': id,
+              'memoNo': memoNo,
+              'name': name,
+              'phone': phone,
+              'address': address,
+              'details': details,
+              'orderDate': orderDate,
+              'seenDate': seenDate,
+              'deliveryDate': deliveryDate,
+              'total': total,
+              'advance': advance,
+              'due': due,
+              'delivered': delivered,
+              'paid': paid,
+            };
+
+            factory Memo.fromJson(Map<String, dynamic> json) => Memo(
+              id: json['id'] ?? '',
+              memoNo: json['memoNo'] ?? '',
+              name: json['name'] ?? '',
+              phone: json['phone'] ?? '',
+              address: json['address'] ?? '',
+              details: json['details'] ?? '',
+              orderDate: json['orderDate'] ?? '',
+              seenDate: json['seenDate'] ?? '',
+              deliveryDate: json['deliveryDate'] ?? '',
+              total: (json['total'] ?? 0).toDouble(),
+              advance: (json['advance'] ?? 0).toDouble(),
+              due: (json['due'] ?? 0).toDouble(),
+              delivered: json['delivered'] ?? false,
+              paid: json['paid'] ?? false,
+            );
+          }
+
+          class MemoStore {
+            static const key = 'memos';
+
+            static Future<List<Memo>> getAll() async {
+              final pref = await SharedPreferences.getInstance();
+              final raw = pref.getStringList(key) ?? [];
+              return raw.map((e) => Memo.fromJson(jsonDecode(e))).toList();
+            }
+
+            static Future<void> save(Memo memo) async {
+              final list = await getAll();
+              final index = list.indexWhere((m) => m.id == memo.id);
+              if (index >= 0) {
+                list[index] = memo;
+              } else {
+                list.add(memo);
+              }
+              final pref = await SharedPreferences.getInstance();
+              await pref.setStringList(
+                key,
+                list.map((m) => jsonEncode(m.toJson())).toList(),
+              );
+            }
+
+            static Future<void> delete(String id) async {
+              final list = await getAll();
+              list.removeWhere((m) => m.id == id);
+              final pref = await SharedPreferences.getInstance();
+              await pref.setStringList(
+                key,
+                list.map((m) => jsonEncode(m.toJson())).toList(),
               );
             }
           }
@@ -285,8 +211,8 @@ jobs:
             }
 
             Future<void> load() async {
-              memos = await Store.getMemos();
-              if (mounted) setState(() {});
+              memos = await MemoStore.getAll();
+              setState(() {});
             }
 
             @override
@@ -295,8 +221,8 @@ jobs:
               final delivered = memos.where((m) => m.delivered).length;
               final dueOrders = memos.where((m) => !m.paid && m.due > 0).length;
               final paidOrders = memos.where((m) => m.paid || m.due <= 0).length;
-              final sale = memos.fold<double>(0, (p, m) => p + m.total);
-              final due = memos.fold<double>(0, (p, m) => p + ((m.paid) ? 0 : m.due));
+              final totalSale = memos.fold<double>(0, (p, m) => p + m.total);
+              final totalDue = memos.fold<double>(0, (p, m) => p + (m.paid ? 0 : m.due));
 
               return Scaffold(
                 appBar: AppBar(title: const Text('Door Memo Reminder'), centerTitle: true),
@@ -315,24 +241,27 @@ jobs:
                         mainAxisSpacing: 10,
                         childAspectRatio: 1.25,
                         children: [
-                          dash('Total Orders', '${memos.length}', Icons.receipt),
-                          dash('Pending', '$pending', Icons.pending_actions),
-                          dash('Delivered', '$delivered', Icons.check_circle),
-                          dash('Due Orders', '$dueOrders', Icons.money_off),
-                          dash('Paid Orders', '$paidOrders', Icons.payments),
-                          dash('Total Due', due.toStringAsFixed(0), Icons.warning),
+                          card('Total Orders', memos.length.toString(), Icons.receipt_long),
+                          card('Pending', pending.toString(), Icons.pending_actions),
+                          card('Delivered', delivered.toString(), Icons.check_circle),
+                          card('Due Orders', dueOrders.toString(), Icons.money_off),
+                          card('Paid Orders', paidOrders.toString(), Icons.payments),
+                          card('Total Due', totalDue.toStringAsFixed(0), Icons.warning),
                         ],
                       ),
                       const SizedBox(height: 12),
-                      Card(elevation: 0, child: ListTile(
-                        leading: const Icon(Icons.trending_up),
-                        title: const Text('Total Sale'),
-                        trailing: Text(sale.toStringAsFixed(0), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                      )),
-                      const SizedBox(height: 10),
+                      Card(
+                        elevation: 0,
+                        child: ListTile(
+                          leading: const Icon(Icons.trending_up),
+                          title: const Text('Total Sale'),
+                          trailing: Text(totalSale.toStringAsFixed(0), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
                       ElevatedButton.icon(
                         icon: const Icon(Icons.add),
-                        label: const Text('Add New Memo'),
+                        label: const Text('Add Memo'),
                         onPressed: () async {
                           await Navigator.push(context, MaterialPageRoute(builder: (_) => const AddMemoPage()));
                           load();
@@ -346,24 +275,34 @@ jobs:
                           load();
                         },
                       ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Note: This starter version saves data offline. Alarm feature can be added in next version after APK test.',
+                        textAlign: TextAlign.center,
+                      ),
                     ],
                   ),
                 ),
               );
             }
 
-            Widget dash(String title, String value, IconData icon) => Card(
-              elevation: 0,
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Icon(icon),
-                  const Spacer(),
-                  Text(value, style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold)),
-                  Text(title),
-                ]),
-              ),
-            );
+            Widget card(String title, String value, IconData icon) {
+              return Card(
+                elevation: 0,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(icon),
+                      const Spacer(),
+                      Text(value, style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold)),
+                      Text(title),
+                    ],
+                  ),
+                ),
+              );
+            }
           }
 
           class AddMemoPage extends StatefulWidget {
@@ -375,22 +314,18 @@ jobs:
           }
 
           class _AddMemoPageState extends State<AddMemoPage> {
-            final form = GlobalKey<FormState>();
+            final formKey = GlobalKey<FormState>();
             final memoNo = TextEditingController();
             final name = TextEditingController();
-            final address = TextEditingController();
             final phone = TextEditingController();
+            final address = TextEditingController();
             final details = TextEditingController();
-            final qty = TextEditingController(text: '1');
-            final rate = TextEditingController(text: '0');
+            final total = TextEditingController(text: '0');
             final advance = TextEditingController(text: '0');
-            final note = TextEditingController();
 
-            String date = DateFormat('yyyy-MM-dd').format(DateTime.now());
+            String orderDate = DateFormat('yyyy-MM-dd').format(DateTime.now());
             String seenDate = '';
-            String seenTime = '09:00';
             String deliveryDate = '';
-            String deliveryTime = '09:00';
             bool delivered = false;
             bool paid = false;
 
@@ -401,92 +336,66 @@ jobs:
               if (m != null) {
                 memoNo.text = m.memoNo;
                 name.text = m.name;
-                address.text = m.address;
                 phone.text = m.phone;
+                address.text = m.address;
                 details.text = m.details;
-                qty.text = '${m.qty}';
-                rate.text = m.rate.toStringAsFixed(0);
+                total.text = m.total.toStringAsFixed(0);
                 advance.text = m.advance.toStringAsFixed(0);
-                note.text = m.note;
-                date = m.date;
+                orderDate = m.orderDate;
                 seenDate = m.seenDate;
-                seenTime = m.seenTime;
                 deliveryDate = m.deliveryDate;
-                deliveryTime = m.deliveryTime;
                 delivered = m.delivered;
                 paid = m.paid;
               }
             }
 
-            double get total => (int.tryParse(qty.text) ?? 0) * (double.tryParse(rate.text) ?? 0);
-
-            double get due {
-              final d = total - (double.tryParse(advance.text) ?? 0);
-              return d < 0 ? 0 : d;
+            double get totalAmount => double.tryParse(total.text) ?? 0;
+            double get advanceAmount => double.tryParse(advance.text) ?? 0;
+            double get dueAmount {
+              final due = totalAmount - advanceAmount;
+              return due < 0 ? 0 : due;
             }
 
-            Future<void> chooseDate(bool seen) async {
-              final pick = await showDatePicker(
+            Future<void> pickDate(String type) async {
+              final picked = await showDatePicker(
                 context: context,
                 firstDate: DateTime(2024),
                 lastDate: DateTime(2035),
                 initialDate: DateTime.now(),
               );
-              if (pick != null) {
+              if (picked != null) {
                 setState(() {
-                  final v = DateFormat('yyyy-MM-dd').format(pick);
-                  if (seen) {
-                    seenDate = v;
+                  final value = DateFormat('yyyy-MM-dd').format(picked);
+                  if (type == 'seen') {
+                    seenDate = value;
                   } else {
-                    deliveryDate = v;
-                  }
-                });
-              }
-            }
-
-            Future<void> chooseTime(bool seen) async {
-              final pick = await showTimePicker(
-                context: context,
-                initialTime: const TimeOfDay(hour: 9, minute: 0),
-              );
-              if (pick != null) {
-                setState(() {
-                  final v = '${pick.hour.toString().padLeft(2, '0')}:${pick.minute.toString().padLeft(2, '0')}';
-                  if (seen) {
-                    seenTime = v;
-                  } else {
-                    deliveryTime = v;
+                    deliveryDate = value;
                   }
                 });
               }
             }
 
             Future<void> save() async {
-              if (!form.currentState!.validate()) return;
+              if (!formKey.currentState!.validate()) return;
 
-              final m = Memo(
+              final memo = Memo(
                 id: widget.memo?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
                 memoNo: memoNo.text.trim(),
-                date: date,
                 name: name.text.trim(),
-                address: address.text.trim(),
                 phone: phone.text.trim(),
+                address: address.text.trim(),
                 details: details.text.trim(),
-                qty: int.tryParse(qty.text) ?? 1,
-                rate: double.tryParse(rate.text) ?? 0,
-                total: total,
-                advance: double.tryParse(advance.text) ?? 0,
-                due: due,
+                orderDate: orderDate,
                 seenDate: seenDate,
-                seenTime: seenTime,
                 deliveryDate: deliveryDate,
-                deliveryTime: deliveryTime,
-                note: note.text.trim(),
+                total: totalAmount,
+                advance: advanceAmount,
+                due: dueAmount,
                 delivered: delivered,
-                paid: paid || due <= 0,
+                paid: paid || dueAmount <= 0,
               );
 
-              await Store.saveMemo(m);
+              await MemoStore.save(memo);
               if (mounted) Navigator.pop(context);
             }
 
@@ -495,26 +404,323 @@ jobs:
               return Scaffold(
                 appBar: AppBar(title: Text(widget.memo == null ? 'Add Memo' : 'Edit Memo')),
                 body: Form(
-                  key: form,
+                  key: formKey,
                   child: ListView(
                     padding: const EdgeInsets.all(14),
                     children: [
                       field(memoNo, 'Memo No', required: true),
                       field(name, 'Customer Name', required: true),
-                      field(address, 'Address'),
                       field(phone, 'Phone Number'),
+                      field(address, 'Address'),
                       field(details, 'Product / Particular Description', maxLines: 3),
-                      Row(children: [
-                        Expanded(child: field(qty, 'Quantity', number: true)),
-                        const SizedBox(width: 10),
-                        Expanded(child: field(rate, 'Rate', number: true)),
-                      ]),
+                      field(total, 'Total Amount', number: true),
                       field(advance, 'Advance Amount', number: true),
-                      Card(elevation: 0, child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(children: [
-                          row('Total', total.toStringAsFixed(0)),
-                          row('Due', due.toStringAsFixed(0)),
-                        ]),
-                      )),
-                      tile('Seen Date', seenDate.isE
+                      Card(
+                        elevation: 0,
+                        child: ListTile(
+                          title: const Text('Due Amount'),
+                          trailing: Text(dueAmount.toStringAsFixed(0), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      dateTile('Seen Date', seenDate, () => pickDate('seen')),
+                      dateTile('Delivery Date', deliveryDate, () => pickDate('delivery')),
+                      SwitchListTile(
+                        title: const Text('Delivered'),
+                        value: delivered,
+                        onChanged: (v) => setState(() => delivered = v),
+                      ),
+                      SwitchListTile(
+                        title: const Text('Payment Paid'),
+                        value: paid || dueAmount <= 0,
+                        onChanged: dueAmount <= 0 ? null : (v) => setState(() => paid = v),
+                      ),
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.save),
+                        label: const Text('Save Memo'),
+                        onPressed: save,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            Widget field(TextEditingController controller, String label, {bool required = false, bool number = false, int maxLines = 1}) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: TextFormField(
+                  controller: controller,
+                  maxLines: maxLines,
+                  keyboardType: number ? TextInputType.number : null,
+                  onChanged: (_) => setState(() {}),
+                  validator: required ? (v) => v == null || v.trim().isEmpty ? 'Required' : null : null,
+                  decoration: InputDecoration(labelText: label),
+                ),
+              );
+            }
+
+            Widget dateTile(String title, String value, VoidCallback onTap) {
+              return Card(
+                elevation: 0,
+                child: ListTile(
+                  title: Text(title),
+                  subtitle: Text(value.isEmpty ? 'Not selected' : value),
+                  trailing: const Icon(Icons.calendar_month),
+                  onTap: onTap,
+                ),
+              );
+            }
+          }
+
+          class OrdersPage extends StatefulWidget {
+            const OrdersPage({super.key});
+
+            @override
+            State<OrdersPage> createState() => _OrdersPageState();
+          }
+
+          class _OrdersPageState extends State<OrdersPage> {
+            List<Memo> memos = [];
+            String query = '';
+            String filter = 'All';
+
+            @override
+            void initState() {
+              super.initState();
+              load();
+            }
+
+            Future<void> load() async {
+              memos = await MemoStore.getAll();
+              setState(() {});
+            }
+
+            List<Memo> get filtered {
+              var list = memos.where((m) {
+                final q = query.toLowerCase();
+                return m.memoNo.toLowerCase().contains(q) ||
+                    m.name.toLowerCase().contains(q) ||
+                    m.phone.toLowerCase().contains(q);
+              }).toList();
+
+              if (filter == 'Pending') list = list.where((m) => !m.delivered).toList();
+              if (filter == 'Delivered') list = list.where((m) => m.delivered).toList();
+              if (filter == 'Due') list = list.where((m) => !m.paid && m.due > 0).toList();
+              if (filter == 'Paid') list = list.where((m) => m.paid || m.due <= 0).toList();
+
+              return list;
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final list = filtered;
+              return Scaffold(
+                appBar: AppBar(title: const Text('All Orders')),
+                floatingActionButton: FloatingActionButton(
+                  child: const Icon(Icons.add),
+                  onPressed: () async {
+                    await Navigator.push(context, MaterialPageRoute(builder: (_) => const AddMemoPage()));
+                    load();
+                  },
+                ),
+                body: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: TextField(
+                        decoration: const InputDecoration(hintText: 'Search memo, name, phone', prefixIcon: Icon(Icons.search)),
+                        onChanged: (v) => setState(() => query = v),
+                      ),
+                    ),
+                    SizedBox(
+                      height: 42,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        children: ['All', 'Pending', 'Delivered', 'Due', 'Paid'].map((f) {
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              label: Text(f),
+                              selected: filter == f,
+                              onSelected: (_) => setState(() => filter = f),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                    Expanded(
+                      child: list.isEmpty
+                          ? const Center(child: Text('No memo found'))
+                          : ListView.builder(
+                              padding: const EdgeInsets.all(12),
+                              itemCount: list.length,
+                              itemBuilder: (context, index) {
+                                final m = list[index];
+                                return Card(
+                                  elevation: 0,
+                                  child: ListTile(
+                                    title: Text('Memo ${m.memoNo} - ${m.name}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                    subtitle: Text('Phone: ${m.phone}\nSeen: ${m.seenDate}\nDelivery: ${m.deliveryDate}\nDue: ${m.due.toStringAsFixed(0)}'),
+                                    isThreeLine: true,
+                                    onTap: () async {
+                                      await Navigator.push(context, MaterialPageRoute(builder: (_) => DetailsPage(memo: m)));
+                                      load();
+                                    },
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              );
+            }
+          }
+
+          class DetailsPage extends StatefulWidget {
+            final Memo memo;
+            const DetailsPage({super.key, required this.memo});
+
+            @override
+            State<DetailsPage> createState() => _DetailsPageState();
+          }
+
+          class _DetailsPageState extends State<DetailsPage> {
+            late Memo memo;
+
+            @override
+            void initState() {
+              super.initState();
+              memo = widget.memo;
+            }
+
+            Future<void> update() async {
+              await MemoStore.save(memo);
+              setState(() {});
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: Text('Memo ${memo.memoNo}'),
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.edit),
+                      onPressed: () async {
+                        await Navigator.push(context, MaterialPageRoute(builder: (_) => AddMemoPage(memo: memo)));
+                        if (mounted) Navigator.pop(context);
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete),
+                      onPressed: () async {
+                        await MemoStore.delete(memo.id);
+                        if (mounted) Navigator.pop(context);
+                      },
+                    ),
+                  ],
+                ),
+                body: ListView(
+                  padding: const EdgeInsets.all(14),
+                  children: [
+                    Card(
+                      elevation: 0,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          children: [
+                            const Text('M/S. Chittagong Door', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                            const Text('Digital Memo'),
+                            const Divider(),
+                            row('Memo No', memo.memoNo),
+                            row('Date', memo.orderDate),
+                            row('Customer', memo.name),
+                            row('Phone', memo.phone),
+                            row('Address', memo.address),
+                            const Divider(),
+                            row('Details', memo.details),
+                            row('Total', memo.total.toStringAsFixed(0)),
+                            row('Advance', memo.advance.toStringAsFixed(0)),
+                            row('Due', memo.due.toStringAsFixed(0)),
+                            const Divider(),
+                            row('Seen Date', memo.seenDate),
+                            row('Delivery Date', memo.deliveryDate),
+                            row('Order Status', memo.delivered ? 'Delivered' : 'Pending'),
+                            row('Payment Status', (memo.paid || memo.due <= 0) ? 'Paid' : 'Due'),
+                          ],
+                        ),
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.check_circle),
+                      label: Text(memo.delivered ? 'Mark Pending' : 'Mark Delivered'),
+                      onPressed: () async {
+                        memo.delivered = !memo.delivered;
+                        await update();
+                      },
+                    ),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.payments),
+                      label: Text(memo.paid ? 'Mark Due' : 'Mark Paid'),
+                      onPressed: () async {
+                        memo.paid = !memo.paid;
+                        await update();
+                      },
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Widget row(String left, String right) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(width: 120, child: Text(left, style: const TextStyle(fontWeight: FontWeight.bold))),
+                    Expanded(child: Text(right.isEmpty ? '-' : right)),
+                  ],
+                ),
+              );
+            }
+          }
+          EOF
+
+      - name: Set Android SDK
+        working-directory: door_memo_app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for file in ["android/app/build.gradle", "android/app/build.gradle.kts"]:
+              p = Path(file)
+              if p.exists():
+                  s = p.read_text()
+                  s = s.replace("compileSdk = flutter.compileSdkVersion", "compileSdk = 35")
+                  s = s.replace("minSdk = flutter.minSdkVersion", "minSdk = 23")
+                  s = s.replace("targetSdk = flutter.targetSdkVersion", "targetSdk = 35")
+                  s = s.replace("compileSdk flutter.compileSdkVersion", "compileSdk 35")
+                  s = s.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 23")
+                  s = s.replace("targetSdkVersion flutter.targetSdkVersion", "targetSdkVersion 35")
+                  p.write_text(s)
+          PY
+
+      - name: Build release APK
+        working-directory: door_memo_app
+        run: flutter build apk --release
+
+      - name: Find APK
+        run: |
+          echo "APK files:"
+          find door_memo_app -name "*.apk" -type f
+          ls -lah door_memo_app/build/app/outputs/flutter-apk/
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: door-memo-reminder-apk
+          path: door_memo_app/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
