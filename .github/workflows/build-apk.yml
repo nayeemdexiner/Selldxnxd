@@ -484,3 +484,9 @@ jobs:
                       tile('Delivery Time', deliveryTime, Icons.access_time, () => chooseTime(false)),
                       field(note, 'Note', maxLines: 2),
                       SwitchListTile(title: const Text('Delivered'), valu
+
+                      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: door-memo-reminder-apk
+          path: door_memo_app/build/app/outputs/flutter-apk/app-release.apk
