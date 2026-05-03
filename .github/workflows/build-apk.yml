@@ -1,4 +1,4 @@
-name: Build Full APK - No Source Files Needed
+name: Build Full APK - Fixed Artifact
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
         with:
           channel: stable
 
-      - name: Create Flutter project automatically
+      - name: Create Flutter app
         run: |
           rm -rf door_memo_app
           flutter create door_memo_app --platforms android --org com.nayeem --project-name door_memo_reminder
@@ -84,7 +84,6 @@ jobs:
             const android = AndroidInitializationSettings('@mipmap/ic_launcher');
             const settings = InitializationSettings(android: android);
             await notifications.initialize(settings);
-
             final androidPlugin = notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
             await androidPlugin?.requestNotificationsPermission();
             await androidPlugin?.requestExactAlarmsPermission();
@@ -109,6 +108,416 @@ jobs:
               required this.total,
               required this.advance,
               required this.due,
+              required this.seenDate,
+              required this.seenTime,
+              required this.deliveryDate,
+              required this.deliveryTime,
+              required this.note,
+              required this.delivered,
+              required this.paid,
+            });
+
+            Map<String, dynamic> toJson() => {
+              'id': id,
+              'memoNo': memoNo,
+              'date': date,
+              'name': name,
+              'address': address,
+              'phone': phone,
+              'details': details,
+              'qty': qty,
+              'rate': rate,
+              'total': total,
+              'advance': advance,
+              'due': due,
+              'seenDate': seenDate,
+              'seenTime': seenTime,
+              'deliveryDate': deliveryDate,
+              'deliveryTime': deliveryTime,
+              'note': note,
+              'delivered': delivered,
+              'paid': paid,
+            };
+
+            factory Memo.fromJson(Map<String, dynamic> j) => Memo(
+              id: j['id'] ?? '',
+              memoNo: j['memoNo'] ?? '',
+              date: j['date'] ?? '',
+              name: j['name'] ?? '',
+              address: j['address'] ?? '',
+              phone: j['phone'] ?? '',
+              details: j['details'] ?? '',
+              qty: j['qty'] ?? 1,
+              rate: (j['rate'] ?? 0).toDouble(),
+              total: (j['total'] ?? 0).toDouble(),
+              advance: (j['advance'] ?? 0).toDouble(),
+              due: (j['due'] ?? 0).toDouble(),
+              seenDate: j['seenDate'] ?? '',
+              seenTime: j['seenTime'] ?? '09:00',
+              deliveryDate: j['deliveryDate'] ?? '',
+              deliveryTime: j['deliveryTime'] ?? '09:00',
+              note: j['note'] ?? '',
+              delivered: j['delivered'] ?? false,
+              paid: j['paid'] ?? false,
+            );
+          }
+
+          class Store {
+            static const key = 'memos';
+
+            static Future<List<Memo>> getMemos() async {
+              final sp = await SharedPreferences.getInstance();
+              final raw = sp.getStringList(key) ?? [];
+              final list = raw.map((e) => Memo.fromJson(jsonDecode(e))).toList();
+              list.sort((a, b) => b.date.compareTo(a.date));
+              return list;
+            }
+
+            static Future<void> saveMemo(Memo m) async {
+              final list = await getMemos();
+              final index = list.indexWhere((x) => x.id == m.id);
+              if (index >= 0) {
+                list[index] = m;
+              } else {
+                list.add(m);
+              }
+              final sp = await SharedPreferences.getInstance();
+              await sp.setStringList(key, list.map((e) => jsonEncode(e.toJson())).toList());
+              await Reminder.schedule(m);
+            }
+
+            static Future<void> deleteMemo(Memo m) async {
+              final list = await getMemos();
+              list.removeWhere((x) => x.id == m.id);
+              final sp = await SharedPreferences.getInstance();
+              await sp.setStringList(key, list.map((e) => jsonEncode(e.toJson())).toList());
+              await Reminder.cancel(m.id);
+            }
+          }
+
+          class Reminder {
+            static int nid(String s) => s.codeUnits.fold(0, (p, e) => (p + e) % 2147483647);
+
+            static DateTime? parse(String date, String time) {
+              try {
+                if (date.isEmpty) return null;
+                final d = date.split('-').map(int.parse).toList();
+                final t = time.split(':').map(int.parse).toList();
+                return DateTime(d[0], d[1], d[2], t[0], t[1]);
+              } catch (_) {
+                return null;
+              }
+            }
+
+            static Future<void> cancel(String id) async {
+              await notifications.cancel(nid('${id}_seen'));
+              await notifications.cancel(nid('${id}_delivery'));
+            }
+
+            static Future<void> schedule(Memo m) async {
+              await cancel(m.id);
+              await one(m, true);
+              await one(m, false);
+            }
+
+            static Future<void> one(Memo m, bool seen) async {
+              final dt = parse(seen ? m.seenDate : m.deliveryDate, seen ? m.seenTime : m.deliveryTime);
+              if (dt == null || dt.isBefore(DateTime.now())) return;
+              final title = seen ? 'Seen Reminder - Memo ${m.memoNo}' : 'Delivery Reminder - Memo ${m.memoNo}';
+              final body = '${m.name}\nPhone: ${m.phone}\nDue: ${m.due.toStringAsFixed(0)}\n${m.details}';
+
+              await notifications.zonedSchedule(
+                nid('${m.id}_${seen ? "seen" : "delivery"}'),
+                title,
+                body,
+                tz.TZDateTime.from(dt, tz.local),
+                const NotificationDetails(
+                  android: AndroidNotificationDetails(
+                    'memo_alarm_channel',
+                    'Memo Alarm',
+                    channelDescription: 'Seen date and delivery date alarm',
+                    importance: Importance.max,
+                    priority: Priority.high,
+                    playSound: true,
+                    enableVibration: true,
+                    fullScreenIntent: true,
+                  ),
+                ),
+                androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+                uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+              );
+            }
+          }
+
+          class DoorMemoApp extends StatelessWidget {
+            const DoorMemoApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'Door Memo Reminder',
+                debugShowCheckedModeBanner: false,
+                theme: ThemeData(
+                  useMaterial3: true,
+                  colorSchemeSeed: Colors.indigo,
+                  scaffoldBackgroundColor: const Color(0xfff4f6fb),
+                  inputDecorationTheme: const InputDecorationTheme(border: OutlineInputBorder()),
+                ),
+                home: const HomePage(),
+              );
+            }
+          }
+
+          class HomePage extends StatefulWidget {
+            const HomePage({super.key});
+
+            @override
+            State<HomePage> createState() => _HomePageState();
+          }
+
+          class _HomePageState extends State<HomePage> {
+            List<Memo> memos = [];
+
+            @override
+            void initState() {
+              super.initState();
+              load();
+            }
+
+            Future<void> load() async {
+              memos = await Store.getMemos();
+              if (mounted) setState(() {});
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final pending = memos.where((m) => !m.delivered).length;
+              final delivered = memos.where((m) => m.delivered).length;
+              final dueOrders = memos.where((m) => !m.paid && m.due > 0).length;
+              final paidOrders = memos.where((m) => m.paid || m.due <= 0).length;
+              final sale = memos.fold<double>(0, (p, m) => p + m.total);
+              final due = memos.fold<double>(0, (p, m) => p + ((m.paid) ? 0 : m.due));
+
+              return Scaffold(
+                appBar: AppBar(title: const Text('Door Memo Reminder'), centerTitle: true),
+                body: RefreshIndicator(
+                  onRefresh: load,
+                  child: ListView(
+                    padding: const EdgeInsets.all(14),
+                    children: [
+                      const Text('Dashboard', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 12),
+                      GridView.count(
+                        crossAxisCount: 2,
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        crossAxisSpacing: 10,
+                        mainAxisSpacing: 10,
+                        childAspectRatio: 1.25,
+                        children: [
+                          dash('Total Orders', '${memos.length}', Icons.receipt),
+                          dash('Pending', '$pending', Icons.pending_actions),
+                          dash('Delivered', '$delivered', Icons.check_circle),
+                          dash('Due Orders', '$dueOrders', Icons.money_off),
+                          dash('Paid Orders', '$paidOrders', Icons.payments),
+                          dash('Total Due', due.toStringAsFixed(0), Icons.warning),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Card(elevation: 0, child: ListTile(
+                        leading: const Icon(Icons.trending_up),
+                        title: const Text('Total Sale'),
+                        trailing: Text(sale.toStringAsFixed(0), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                      )),
+                      const SizedBox(height: 10),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add New Memo'),
+                        onPressed: () async {
+                          await Navigator.push(context, MaterialPageRoute(builder: (_) => const AddMemoPage()));
+                          load();
+                        },
+                      ),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.list),
+                        label: const Text('All Orders'),
+                        onPressed: () async {
+                          await Navigator.push(context, MaterialPageRoute(builder: (_) => const OrdersPage()));
+                          load();
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            Widget dash(String title, String value, IconData icon) => Card(
+              elevation: 0,
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Icon(icon),
+                  const Spacer(),
+                  Text(value, style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold)),
+                  Text(title),
+                ]),
+              ),
+            );
+          }
+
+          class AddMemoPage extends StatefulWidget {
+            final Memo? memo;
+            const AddMemoPage({super.key, this.memo});
+
+            @override
+            State<AddMemoPage> createState() => _AddMemoPageState();
+          }
+
+          class _AddMemoPageState extends State<AddMemoPage> {
+            final form = GlobalKey<FormState>();
+            final memoNo = TextEditingController();
+            final name = TextEditingController();
+            final address = TextEditingController();
+            final phone = TextEditingController();
+            final details = TextEditingController();
+            final qty = TextEditingController(text: '1');
+            final rate = TextEditingController(text: '0');
+            final advance = TextEditingController(text: '0');
+            final note = TextEditingController();
+
+            String date = DateFormat('yyyy-MM-dd').format(DateTime.now());
+            String seenDate = '';
+            String seenTime = '09:00';
+            String deliveryDate = '';
+            String deliveryTime = '09:00';
+            bool delivered = false;
+            bool paid = false;
+
+            @override
+            void initState() {
+              super.initState();
+              final m = widget.memo;
+              if (m != null) {
+                memoNo.text = m.memoNo;
+                name.text = m.name;
+                address.text = m.address;
+                phone.text = m.phone;
+                details.text = m.details;
+                qty.text = '${m.qty}';
+                rate.text = m.rate.toStringAsFixed(0);
+                advance.text = m.advance.toStringAsFixed(0);
+                note.text = m.note;
+                date = m.date;
+                seenDate = m.seenDate;
+                seenTime = m.seenTime;
+                deliveryDate = m.deliveryDate;
+                deliveryTime = m.deliveryTime;
+                delivered = m.delivered;
+                paid = m.paid;
+              }
+            }
+
+            double get total => (int.tryParse(qty.text) ?? 0) * (double.tryParse(rate.text) ?? 0);
+
+            double get due {
+              final d = total - (double.tryParse(advance.text) ?? 0);
+              return d < 0 ? 0 : d;
+            }
+
+            Future<void> chooseDate(bool seen) async {
+              final pick = await showDatePicker(
+                context: context,
+                firstDate: DateTime(2024),
+                lastDate: DateTime(2035),
+                initialDate: DateTime.now(),
+              );
+              if (pick != null) {
+                setState(() {
+                  final v = DateFormat('yyyy-MM-dd').format(pick);
+                  if (seen) {
+                    seenDate = v;
+                  } else {
+                    deliveryDate = v;
+                  }
+                });
+              }
+            }
+
+            Future<void> chooseTime(bool seen) async {
+              final pick = await showTimePicker(
+                context: context,
+                initialTime: const TimeOfDay(hour: 9, minute: 0),
+              );
+              if (pick != null) {
+                setState(() {
+                  final v = '${pick.hour.toString().padLeft(2, '0')}:${pick.minute.toString().padLeft(2, '0')}';
+                  if (seen) {
+                    seenTime = v;
+                  } else {
+                    deliveryTime = v;
+                  }
+                });
+              }
+            }
+
+            Future<void> save() async {
+              if (!form.currentState!.validate()) return;
+
+              final m = Memo(
+                id: widget.memo?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
+                memoNo: memoNo.text.trim(),
+                date: date,
+                name: name.text.trim(),
+                address: address.text.trim(),
+                phone: phone.text.trim(),
+                details: details.text.trim(),
+                qty: int.tryParse(qty.text) ?? 1,
+                rate: double.tryParse(rate.text) ?? 0,
+                total: total,
+                advance: double.tryParse(advance.text) ?? 0,
+                due: due,
+                seenDate: seenDate,
+                seenTime: seenTime,
+                deliveryDate: deliveryDate,
+                deliveryTime: deliveryTime,
+                note: note.text.trim(),
+                delivered: delivered,
+                paid: paid || due <= 0,
+              );
+
+              await Store.saveMemo(m);
+              if (mounted) Navigator.pop(context);
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(title: Text(widget.memo == null ? 'Add Memo' : 'Edit Memo')),
+                body: Form(
+                  key: form,
+                  child: ListView(
+                    padding: const EdgeInsets.all(14),
+                    children: [
+                      field(memoNo, 'Memo No', required: true),
+                      field(name, 'Customer Name', required: true),
+                      field(address, 'Address'),
+                      field(phone, 'Phone Number'),
+                      field(details, 'Product / Particular Description', maxLines: 3),
+                      Row(children: [
+                        Expanded(child: field(qty, 'Quantity', number: true)),
+                        const SizedBox(width: 10),
+                        Expanded(child: field(rate, 'Rate', number: true)),
+                      ]),
+                      field(advance, 'Advance Amount', number: true),
+                      Card(elevation: 0, child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(children: [
+                          row('Total', total.toStringAsFixed(0)),
+                          row('Due', due.toStringAsFixed(0)),
+                        ]),
+                      )),
+                      tile('Seen Date', seenDate.isE              required this.due,
               required this.seenDate,
               required this.seenTime,
               required this.deliveryDate,
